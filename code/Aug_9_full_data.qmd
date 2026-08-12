@@ -1,0 +1,914 @@
+---
+title: "Analysis of Complete Ride Data"
+author: "Ishara Wijayaratne"
+format: html
+editor: visual
+---
+
+## Data Cleaning
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+library(readxl)
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(stringr)
+library(lubridate) # used in function mutate()
+library(gt) # to get a tabular format for the summary statistics
+
+```
+
+### Complete Dataset
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+ride_full <- read_excel("Ride Requests_2026-06-09.xlsx")
+
+ride_full <- ride_full |>
+  select(
+    Request_Creation_Time    = `Request Creation Time`,
+    Request_Status           = `Request Status`, #should be Completed
+    Rider_ID                 = `Rider ID`,
+    Booking_Method           = `Booking Method`, #any booking method is accepted
+    Origin_Address           = `Origin Address`,
+    Origin_Lat               = `Origin Lat`,
+    Origin_Lng               = `Origin Lng`,
+    Destination_Address      = `Destination Address`,
+    Destination_Lat          = `Destination Lat`,
+    Destination_Lng          = `Destination Lng`,
+    
+    Ride_Distance                 = `Ride Distance`,
+    Pickup_Walking_Distance_ft    = `Pickup Walk Distance`,
+    Dropoff_Walking_Distance_ft   = `Dropoff Walk Distance`,
+    
+    Ride_Duration            = `Ride Duration`, #amount of time the ride lasted
+    Waiting_time_to_pickup_minutes = `On Demand Pickup ETA Minutes`, #Number of minutes from ride request to the estimated time of arrival (ETA)
+    Deviation_minutes        = `On Demand Pickup ETA Deviation Minutes` #captures pickup delay, +ve a delay, -ve early
+  )
+
+ride_full <- ride_full |>
+  mutate(across(c(Ride_Distance,
+                  Pickup_Walking_Distance_ft,
+                  Dropoff_Walking_Distance_ft,
+                  Ride_Duration,
+                  Waiting_time_to_pickup_minutes,
+                  Deviation_minutes),
+                as.numeric))
+
+
+ride_full <- as.data.frame(ride_full)
+
+ride_full <- ride_full |>
+  mutate(Rider_ID = str_extract(as.character(Rider_ID), "\\d{7}"))
+
+ride_full <- ride_full |>
+  mutate(
+    Request_Creation_Time = force_tz(as_datetime(Request_Creation_Time), "America/New_York"),
+    creation_date         = as_date(Request_Creation_Time),
+    creation_time         = hms::as_hms(Request_Creation_Time),
+    study_week            = case_when(
+      creation_date >= ymd("2026-03-30") & creation_date <= ymd("2026-04-04") ~ "Mar30-Apr4",
+      creation_date >= ymd("2026-04-06") & creation_date <= ymd("2026-04-11") ~ "Apr 6-11",
+      creation_date >= ymd("2026-04-13") & creation_date <= ymd("2026-04-18") ~ "Apr 13-18",
+      creation_date >= ymd("2026-04-20") & creation_date <= ymd("2026-04-25") ~ "Apr 20-25",
+      creation_date >= ymd("2026-04-27") & creation_date <= ymd("2026-05-02") ~ "Apr27-May2",
+      creation_date >= ymd("2026-05-04") & creation_date <= ymd("2026-05-09") ~ "May 4-9",
+      creation_date >= ymd("2026-05-11") & creation_date <= ymd("2026-05-16") ~ "May 11-16",
+      creation_date >= ymd("2026-05-18") & creation_date <= ymd("2026-05-23") ~ "May 18-23",
+      creation_date >= ymd("2026-05-25") & creation_date <= ymd("2026-05-30") ~ "May 25-30",
+      TRUE ~ NA_character_
+    )
+  ) |>
+  arrange(Rider_ID, creation_date, creation_time) |>  # order to the second
+  group_by(Rider_ID, creation_date) |>
+  mutate(first_ride_of_day = row_number() == 1L) |>
+  ungroup() |>
+  select(-Request_Creation_Time)   
+
+ride_full <- ride_full |>
+  relocate(creation_date, creation_time, Ride_Duration, Rider_ID)
+
+#can also look into including:
+#ride_shared = Ride Shared (Y/N)
+#no_of_passengers = Number of Passengers
+#Is WAV Request ?
+#The survey was filled before booking the first ride of the day?
+#Last Planned Trip Duration Minutes Before Pickup - This is the length of time the current ride was expected to take, from pickup to drop-off, based on the most up-to-date route plan right before the vehicle arrived to pick the rider up.
+
+
+glimpse(ride_full)
+```
+
+### Survey/Qualtrics Dataset
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+raw <- read_csv(
+  "USE__May 25 2026__Wilson_SLJLMS .csv",
+  skip = 3,                 # drop 3 top rows
+  col_names = c(            # variable names
+    "start_date_time", "end_date", "IPaddress", "progress", "duration",
+    "finished", "recorded_date", "response_ID", "recipient_last_name",
+    "latitude", "longitude", "Q_recaptcha_score", "phone_NO",
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+    "trip_purpose", "trip_purpose_text", "comments",
+    "Q_recaptcha_status", "Q_recaptcha_error", "day", "via", "incentive"
+  ),
+  col_types = cols(.default = col_character()),  # read all as text, converted below
+  na = c("", "NA")          # set missing values to NA
+)
+ride_data <- raw %>%
+  mutate(
+    
+    #Re-code variable incentive
+    incentive = case_match(incentive,
+                           "No Rides"     ~ 0,
+                           "1 Free Ride"  ~ 1,
+                           "2 Free Rides" ~ 2),
+    
+    # Dates & Times (format is m/d/Y H:M, eastern time)
+    across(c(start_date_time, end_date, recorded_date),
+           ~ mdy_hm(.x, tz = "America/New_York")),
+    # numeric fields
+    across(c(progress, duration, latitude, longitude), as.numeric),
+    # logical / categorical
+    finished  = as.logical(as.integer(finished)),  # 1 = TRUE, 0 = FALSE
+    Monday = as.factor(Monday),       #1-7 likert scale
+    Tuesday = as.factor(Tuesday),     #1-7 likert scale
+    Wednesday = as.factor(Wednesday), #1-7 likert scale
+    Thursday = as.factor(Thursday),   #1-7 likert scale
+    Friday = as.factor(Friday),       #1-7 likert scale
+    Saturday = as.factor(Saturday),   #1-7 likert scale
+    trip_purpose  = as.integer(trip_purpose),  #1-8 likert scale
+    incentive = as.factor(incentive)
+    
+  )
+#Remove unwatnted variables
+ride_data <- ride_data %>%
+  select(-c(Q_recaptcha_score, Q_recaptcha_status, Q_recaptcha_error,
+            recipient_last_name, response_ID, IPaddress, phone_NO, trip_purpose_text, comments))
+# using summary statistics it was noticed that IPAddress is not unique to a person, and provided no valuable information.
+
+ride_data <- as.data.frame(ride_data)
+                           
+#rename 
+ride_data <- ride_data |>
+             rename(end_date_time = end_date, recorded_date_time = recorded_date)
+
+#response_ID is a per-submission unique ID
+#each individual can have more than one IPaddress
+#rearrange rows
+ride_data <- ride_data %>%
+  mutate(
+    survey_date = as_date(start_date_time),     # drop time, keep the date
+    start_time = hms::as_hms(start_date_time),
+    end_date = as_date(end_date_time),
+    end_time = hms::as_hms(end_date_time),
+    recorded_date = as_date(recorded_date_time),
+    recorded_time = hms::as_hms(recorded_date_time),
+    day = str_extract(day, "^\\w+"),
+    week_group = case_when(
+      survey_date >= ymd("2026-04-06") & survey_date <= ymd("2026-04-11") ~ "Apr 6-11",
+      survey_date >= ymd("2026-04-20") & survey_date <= ymd("2026-04-25") ~ "Apr 20-25",
+      survey_date >= ymd("2026-05-04") & survey_date <= ymd("2026-05-09") ~ "May 4-9",
+      survey_date >= ymd("2026-05-18") & survey_date <= ymd("2026-05-23") ~ "May 18-23",
+      TRUE ~ NA_character_
+    ),
+    week_group = factor(week_group,
+                        levels = c("Apr 6-11", "Apr 20-25", "May 4-9", "May 18-23"))
+  ) %>% 
+  arrange(week_group, desc(progress), start_date_time)  # group -> progress -> start_date_time
+#remove 2 rows which had NA for week_group
+ride_data <- ride_data[!is.na(ride_data$week_group), ] 
+#removed 10 rows where via ID is "wilso_0"
+ride_data <- ride_data |>
+  mutate(unique_id   = str_extract(as.character(via), "\\d{7}")   
+         #,has_survey = TRUE    # intrduce a variable to marks rows that carry a survey
+  ) |>
+  filter(!is.na(unique_id))
+
+#remove unwanted rows after adjustments
+ride_data <- ride_data %>%
+  select(-c(start_date_time, end_date_time, recorded_date_time, via))
+
+
+ride_data <- ride_data |>
+  relocate(survey_date, start_time, end_date, end_time,recorded_date, recorded_time, duration, unique_id)
+
+head(ride_data)
+
+```
+
+### Three conditions to merge on:
+
+1\) unique_id (in ride_data) should match with Rider_ID (in ride_full)
+
+2\) Filter first_ride_of_day == TRUE (in ride_full)
+
+3\) creation_date (in ride_full) should match survey_date (in ride_data)
+
+### Insightful Questions ?
+
+#### (1) For everything other than Request_Status == "Completed", are there any corresponding individuals in ride_data. How many?
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+noncomplete_ids <- ride_full |>
+  filter((Request_Status != "Completed" | is.na(Request_Status)),
+         first_ride_of_day == TRUE) |>
+  distinct(Rider_ID, creation_date)
+
+ride_data |>
+  semi_join(noncomplete_ids,
+            by = c("unique_id"   = "Rider_ID",
+                   "survey_date" = "creation_date")) |>
+  nrow()
+
+ride_data |>
+  semi_join(noncomplete_ids,
+            by = c("unique_id"   = "Rider_ID",
+                   "survey_date" = "creation_date")) |>
+  distinct(unique_id) |>
+  nrow()
+
+```
+
+Remove these 387 rows, why? the ride was not completed by the individuals who started this survey
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+#remove these 387 rows, why? the ride was not completed by the individuals who started this survey
+ride_data <- ride_data |>
+  anti_join(noncomplete_ids,
+            by = c("unique_id"   = "Rider_ID",
+                   "survey_date" = "creation_date")) #1573 rows
+nrow(ride_data)
+```
+
+#### 
+
+#### (2) All unique_id (in ride_data) should match with Rider_ID (in ride_full). How many rows don't match ?
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+id_mismatch = ride_data |> 
+  anti_join(ride_full, by = c("unique_id" = "Rider_ID")) 
+nrow(id_mismatch)
+n_distinct(id_mismatch$unique_id)
+```
+
+Remove the 64 surveys, 56 individuals who didn't have matching IDs in ride_full
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+ride_data <- ride_data |>
+  semi_join(ride_full, by = c("unique_id" = "Rider_ID")) #1509 rows
+nrow(ride_data)
+```
+
+#### (3) How many distinct pairs of (unique_id, survey_date) are there in from ride_data?
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+# obtain distinct pairs of (unique_id, survey_date) from ride_data
+surveys <- ride_data |>
+  distinct(unique_id, survey_date) #1441 rows 
+nrow(surveys)
+#a person-day appearing 3 times contributes 2 to this 68 (1509-1441)
+
+```
+
+1441 \< 1509, therefore, there are dupes in the survey data which must be removed. Dupes happen when an individual takes more than one survey in a day.
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+dupes <- ride_data |>
+  group_by(unique_id, survey_date) |>
+  filter(n() > 1) |>
+  ungroup()  #133 dupes (this is larger than 68 because it includes the first survey taken on each day as well)
+nrow(dupes)
+
+#Remove 68 surveys 
+ride_data <- ride_data |>
+  group_by(unique_id, survey_date) |>
+  slice_min(start_time, n = 1, with_ties = FALSE) |>
+  ungroup()
+
+nrow(ride_data)
+```
+
+ride_data should now has 1441 rows.
+
+#### (4) Filtering ride_full for Request_Status == "Completed"
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+ride_full <- ride_full |>
+  filter(Request_Status == "Completed") 
+```
+
+### Creating column weekly_ride_count in ride_data
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+# 1. ride log for survey takers from ride_full - individuals who didn't take even a single survey were not considered.
+ride_full_ids <- ride_full |>
+  filter(Rider_ID %in% ride_data$unique_id) |>
+  select(unique_id = Rider_ID, ride_date = creation_date)
+
+
+# 2. perform an inner_join
+pairs <- ride_data |>
+  inner_join(ride_full_ids, by = "unique_id", relationship = "many-to-many") |>
+  mutate(days_between = as.integer(survey_date - ride_date)) |>
+  filter(days_between > 0, days_between <= 7) |>
+  arrange(unique_id)  
+
+#ride_date corresponds to the creation_date in ride_full 
+table(pairs$days_between) 
+
+```
+
+If a person took 4 rides in the week before a given survey, that survey shows up as 4 rows in `pairs`.
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+# 3. one row per survey, counting how many rides fell inside each survey's lookback window.
+counts <- pairs |>
+  count(unique_id, survey_date, name = "weekly_ride_count") # 1171 rows
+
+# 4. attach the counts to ride_data; surveys with no rides in the window get a count of zero.
+ride_data <- ride_data |>
+  left_join(counts, by = c("unique_id", "survey_date")) |>
+  mutate(weekly_ride_count = coalesce(weekly_ride_count, 0L))
+
+#sum(ride_data$weekly_ride_count == 0)   # how many zero-ride surveys were recovered - 270
+#sum(is.na(ride_data$weekly_ride_count)) # 0 — no NAs left
+```
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+glimpse(ride_data)
+```
+
+### Reverse Scale Saturday in ride_data
+
+```{r,message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+ride_data <- ride_data %>%
+  mutate(
+    Saturday_raw = as.integer(as.character(Saturday)),
+    Saturday     = factor(8L - Saturday_raw, levels = 1:7, ordered = TRUE)
+  )
+```
+
+### Creating the column well_being_score in ride_data
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+ride_data <- ride_data %>%
+  mutate(
+    well_being_score = coalesce(
+      as.integer(as.character(Monday)),
+      as.integer(as.character(Tuesday)),
+      as.integer(as.character(Wednesday)),
+      as.integer(as.character(Thursday)),
+      as.integer(as.character(Friday)),
+      as.integer(as.character(Saturday))
+    )
+  )
+
+sum(is.na(ride_data$well_being_score))
+```
+
+- There are 135 rows with missing well_being_scores.
+- Summary statistics of the missingness in column well_being_score
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+ride_data %>%
+  group_by(incentive) %>%
+  summarise(
+    n          = n(),
+    wb_NA = sum(is.na(well_being_score)),
+    wb_NA_rate    = mean(is.na(well_being_score))   # proportion missing
+  ) %>%
+  mutate(wb_NA_pct = round(100 * wb_NA_rate, 1))
+```
+
+- 2x2 table of finished (TRUE/FALSE) vs well-being is missing or not
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+ride_data %>%
+  count(finished,
+        wb_is_NA = is.na(well_being_score)) %>%
+  tidyr::pivot_wider(names_from  = wb_is_NA,
+                     values_from = n,
+                     names_prefix = "wb_NA_",
+                     values_fill = 0)
+```
+
+### More Variables
+
+Creating the weekly variables: weekly_ride_distance, weekly_pickup_walking_distance_ft, weekly_dropoff_walking_distance_ft, weekly_ride_duration, weekly_waiting_time_to_pickup_minutes, weekly_deviation_minutes
+
+There are no NA values in ride_full when filtered for "Complete".
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+#weekly ride characteristics, built with the same 7-day rule used for weekly_ride_count.
+#note: weekly_completed_ride_count is returned alongside so the averages have an explicit base.
+# ---------------------------------------------------------------
+
+# 1. lean ride log for survey takers, carrying the six measures
+ride_log <- ride_full |>
+  filter(Rider_ID %in% ride_data$unique_id) |>
+  select(unique_id = Rider_ID,
+         ride_date = creation_date,
+         Request_Status,
+         Ride_Distance,
+         Pickup_Walking_Distance_ft,
+         Dropoff_Walking_Distance_ft,
+         Ride_Duration,
+         Waiting_time_to_pickup_minutes,
+         Deviation_minutes)
+
+# 2. one row per (survey, prior ride) pair inside the 7-day window
+pairs_measures <- ride_data |>
+  select(unique_id, survey_date) |>
+  inner_join(ride_log, by = "unique_id", relationship = "many-to-many") |>
+  mutate(days_between = as.integer(survey_date - ride_date)) |>
+  filter(days_between > 0, days_between <= 7)
+
+# 3. collapse to one row per survey
+weekly_measures <- pairs_measures |>
+  group_by(unique_id, survey_date) |>
+  summarise(
+    weekly_completed_ride_count          = n(),
+    
+    # totals over the week
+    weekly_ride_distance                 = sum(Ride_Distance,                  na.rm = TRUE),
+    weekly_pickup_walking_distance_ft    = sum(Pickup_Walking_Distance_ft,     na.rm = TRUE),
+    weekly_dropoff_walking_distance_ft   = sum(Dropoff_Walking_Distance_ft,    na.rm = TRUE),
+    weekly_ride_duration                 = sum(Ride_Duration,                  na.rm = TRUE),
+    weekly_waiting_time_to_pickup_minutes = sum(Waiting_time_to_pickup_minutes, na.rm = TRUE),
+    weekly_deviation_minutes             = sum(Deviation_minutes,              na.rm = TRUE),
+    
+    # per-ride means over the same window
+    mean_ride_distance                   = mean(Ride_Distance,                  na.rm = TRUE),
+    mean_pickup_walking_distance_ft      = mean(Pickup_Walking_Distance_ft,     na.rm = TRUE),
+    mean_dropoff_walking_distance_ft     = mean(Dropoff_Walking_Distance_ft,    na.rm = TRUE),
+    mean_ride_duration                   = mean(Ride_Duration,                  na.rm = TRUE),
+    mean_waiting_time_to_pickup_minutes  = mean(Waiting_time_to_pickup_minutes, na.rm = TRUE),
+    mean_deviation_minutes               = mean(Deviation_minutes,              na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  # mean() of an all-NA slice returns NaN; make those explicit NA
+  mutate(across(starts_with("mean_"), ~ if_else(is.nan(.x), NA_real_, .x)))
+
+# attach to ride_data
+# Totals: a survey with no completed rides in the window gets 0.
+# Averages: left as NA, since an average over zero rides is undefined.
+ride_data <- ride_data |>
+  left_join(weekly_measures, by = c("unique_id", "survey_date")) |>
+  mutate(
+    weekly_completed_ride_count = coalesce(weekly_completed_ride_count, 0L),
+    across(c(weekly_ride_distance,
+             weekly_pickup_walking_distance_ft,
+             weekly_dropoff_walking_distance_ft,
+             weekly_ride_duration,
+             weekly_waiting_time_to_pickup_minutes, #is median more suited ? No
+             weekly_deviation_minutes #is median more suited ? No
+             ),
+           ~ coalesce(.x, 0))
+  )
+
+# 5. check
+
+summary(select(ride_data, weekly_ride_distance, weekly_ride_duration))
+summary(select(ride_data, weekly_pickup_walking_distance_ft, weekly_dropoff_walking_distance_ft))
+summary(select(ride_data, weekly_waiting_time_to_pickup_minutes, weekly_deviation_minutes))
+summary(select(ride_data, mean_waiting_time_to_pickup_minutes, mean_deviation_minutes))
+```
+
+All of the mean columns have 336 rows with NA values, why is this? ? these 336 are surveys where the rider took **no completed rides in the preceding seven days**, that is the denominator is zero. To use mean\_ variable will have to drop rows - best to avoid them
+
+Keep in mind there can be colinearity if both weekly_ride_count and weekly_ride_distance.
+
+### Insightful Questions:
+
+#### (1) How many rows in ride_data don't match to rows in ride_full, when the 3 merging conditions are applied ?
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+ride_full_first <- ride_full |>
+  filter(first_ride_of_day == TRUE)          # condition 2
+
+ride_data |>
+  anti_join(ride_full_first,
+            by = c("unique_id"   = "Rider_ID",           # condition 1
+                   "survey_date" = "creation_date")) |>  # condition 3
+  nrow()
+```
+
+Remove these 183 surveys, who took a survey but didn't book a ride right afterwards?
+
+yes remove them, because the well_being scores are particular to that specific date.
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+ride_data = ride_data |>
+  semi_join(ride_full_first,
+            by = c("unique_id"   = "Rider_ID",
+                   "survey_date" = "creation_date"))
+```
+
+#### (2) For Booking_Method == c("Agent", "Web Application") in ride_full, are there any corresponding individuals in ride_data. 3 merging conditions are applied here. How many?
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+agent_web_ids <- ride_full |>
+  filter(Booking_Method %in% c("Agent", "Web Application"),
+         first_ride_of_day == TRUE) |>
+  distinct(Rider_ID, creation_date)
+
+# ride_data rows matching on both id and date
+ride_data |>
+  semi_join(agent_web_ids,
+            by = c("unique_id"   = "Rider_ID",
+                   "survey_date" = "creation_date")) |>
+  nrow()
+
+# distinct individuals
+ride_data |>
+  semi_join(agent_web_ids,
+            by = c("unique_id"   = "Rider_ID",
+                   "survey_date" = "creation_date")) |>
+  distinct(unique_id) |>
+  nrow()
+```
+
+### Summary Statistics
+
+- Number of incentives per incetive category
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+# No. of incentives per incentive category
+incentive_summary <- ride_data %>%
+  mutate(incentive = factor(incentive, levels = c(0, 1, 2),
+                            labels = c("No Rides", "1 Free Ride", "2 Free Rides"))) %>%
+  count(incentive, name = "No_of_incentives") %>%
+  mutate(percent = round(No_of_incentives / sum(No_of_incentives) * 100, 1)) %>%
+  rename(`Incentive`   = incentive,
+         `Submissions` = No_of_incentives,
+         `Percent`     = percent)
+
+incentive_summary %>% gt()
+```
+
+- Participants by how many times took the survey repetitively
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+frequency_summary <- ride_data %>%
+  count(unique_id, name = "n_sub") %>%
+  mutate(times = case_when(
+    n_sub == 1 ~ "Once",          n_sub == 2 ~ "Twice",
+    n_sub == 3 ~ "Three times",   n_sub == 4 ~ "Four times",
+    n_sub == 5 ~ "Five times",    n_sub == 6 ~ "Six times",
+    n_sub == 7 ~ "Seven times",   n_sub == 8 ~ "Eight times",
+    n_sub == 9 ~ "Nine times",    n_sub == 10 ~ "Ten times",
+    n_sub  > 10 ~ "More than 10 times"
+  )) %>%
+  count(times, name = "participants") %>%
+  mutate(times = factor(times, levels = c("Once","Twice","Three times","Four times",
+                                          "Five times","Six times","Seven times",
+                                          "Eight times","Nine times","Ten times",
+                                          "More than 10 times"))) %>%
+  arrange(times) %>%
+  mutate(percent = round(participants / sum(participants) * 100, 1)) %>%
+  rename(`Times surveyed` = times,
+         `Participants`   = participants,
+         `Percent`        = percent)
+
+frequency_summary %>% gt()
+```
+
+## Modeling
+
+#### (1) Logistic Models
+
+$$\begin{aligned}
+\text{Y}_{ij} &\sim \text{Bernoulli}(\pi_{ij}) \\
+&\text{Y}_{ij} = 1, \text{when individual j completed survey i.} \\[4pt]
+\log\!\left(\frac{\pi_{ij}}{1 - \pi_{ij}}\right)
+&= (\beta_0 + u_j)
++ \beta_1\,\text{OneFreeRide}_{ij}
++ \beta_2\,\text{TwoFreeRides}_{ij}
++ \beta_3 \text{day}_{ij}, \\
+\qquad u_j \overset{iid}{\sim} N(0, \sigma_u^2)
+\end{aligned}$$
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+library(lme4)
+
+model_df <- ride_data %>%
+  mutate(incentive = factor(incentive, levels = c(0, 1, 2),
+                            labels = c("No Rides", "1 Free Ride", "2 Free Rides")))
+
+# finished (T/F) ~ incentive + day + random intercept per individual 
+logistic_model <- glmer(
+  finished ~ incentive + day  + (1 | unique_id),
+  family = binomial,
+  data   = model_df,
+  control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1e6))
+)
+
+summary(logistic_model)
+VarCorr(logistic_model)
+```
+
+Since AIC continues to reduce (from 787.9 to 783.5) it was decided to include $day$ in the model although including the variable was shown to not be significant as per the ANOVA test.
+
+- **Intercept (7.7958):** A typical rider (random intercept = 0) offered No Rides on a Friday (the reference day), has predicted log odds of completing the survey of 7.80. probability of completion: e\^7.80 / (1 + e\^7.80) ≈ 0.9996.
+
+- **Random intercept (σ̂\_u = 13.92, variance = 193.7):** This captures how much an individual rider's baseline log odds of completing departs from the overall intercept. A SD of 13.92 on the logit scale is extremely large, it corresponds to fitted individual completion probabilities pinned at essentially 0 or 1.
+
+SD of $u_j$ is unexpectedly high, fit the model without random effect.
+
+Drawback: glm() treats all 1258 surveys as unrelated, but they come from 648 riders, so repeat respondents are counted as independent evidence when they are not.
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+glm_fixed <- glm(finished ~ incentive + day, family = binomial, data = model_df)
+
+summary(glm_fixed)
+```
+
+The drop from null to residual is the deviance explained by the predictors:
+
+940.84−920.62=20.22 on 1440−1433=7 degrees of freedom
+
+Under the null hypothesis that all seven slopes are zero, this difference follows a $\chi^2_{7}$​ distribution:
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+pchisq(20.22, df = 7, lower.tail = FALSE)   # ≈ 0.0051
+```
+
+This p-value is the probability of observing a deviance drop *at least as large as* 20.22, **assuming all seven slopes are truly zero**. This null hypothesis is rejected.
+
+$$p = P(\chi^2_7 \geq 20.22 | H_0 \ true) = 0.0051 $$
+
+So the predictors jointly improve on the intercept-only model at $p \approx 0.005$. Essentially all of that 20.22 comes from incentive, and very little from day.
+
+$$\begin{aligned} \log\!\left(\frac{\pi_{ij}}{1 - \pi_{ij}}\right) &= (\beta_0 + u_j) + \beta_1\,\text{OneFreeRide}_{ij} + \beta_2\,\text{TwoFreeRides}_{ij} \ + \sum_{k=3}^7 \beta_k \ DAY_{k,ij}  \end{aligned}$$
+
+Rider $j$ enters only through the clustering of the *residuals*, not through a parameter, so the coefficients are population-averaged rather than subject-specific.
+
+**Where the clustering enters.** The usual model-based variance assumes all 1441 surveys are independent:
+
+$$\hat{Var}_{model}(\hat{\beta}) = (X^TWX)^{-1}, \ W = diag(\hat{\pi_i}(1-\hat{\pi}_i))$$
+
+The cluster-robust (sandwich) estimator replaces this with (G=736 riders):
+
+$$\hat{Var}_{CL}(\hat{\beta}) = (X^TWX)^{-1}[\sum_{j=1}^G s_js_j^T](X^TWX)^{-1}$$
+
+where $s_j$ is the sum of the score contributions within rider j :
+
+$$s_j = \sum_{i \in j} (y_{ij} - \hat{\pi}_{ij}) x_{ij}$$
+
+The essential point is in that inner sum. Residuals are added up *within* each rider before being squared, so if a rider's residuals move together the meat inflates and the standard errors widen. If residuals within a rider are unrelated, the meat is close to the independence version and nothing much changes.
+
+This cluster-robust fit is empirical evidence that the within-rider correlation in completion is negligible.
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+library(sandwich)
+library(lmtest)
+
+coeftest(glm_fixed, vcov = vcovCL, cluster = ~ unique_id)
+```
+
+generalizing estimating equation (GEE) - correlation structure, unbiased, assumption about correlation must be made (if correct efficient).
+
+**Intercept (1.8283):** A rider offered No Rides on a Friday (the reference day) has predicted log-odds of completing the survey of 1.83. Probability of completion: e\^1.83 / (1 + e\^1.83) ≈ 0.86.
+
+**1 Free Ride (0.5358):** Holding day fixed, being offered 1 free ride rather than none raises the log-odds of completion by 0.54. On the odds scale, e\^0.54 ≈ 1.71, so the odds of completing are roughly 1.7 times higher than under No Rides (p = 0.0035). On the probability scale this moves a Friday rider from 0.86 ( $plogis(1.8283)$ ) to about 0.91 ( $plogis(1.8283 + 0.5358)$ ).
+
+**2 Free Rides (1.0301):** Relative to No Rides, the log-odds rise by 1.03. On the odds scale, e\^1.03 ≈ 2.80, so the odds of completing are roughly 2.8 times higher than under No Rides (p = 0.0009). In probability terms, from 0.86 to about 0.95 ( $plogis(1.8283 + 1.0301)$ ).
+
+The monotone ordering holds (0 \< 0.54 \< 1.03), and both contrasts remain significant after accounting for repeated responses by the same rider (which is the result we wanted), since it means the incentive effect is not an artifact of a handful of frequent respondents.
+
+**Day of week (reference = Friday):** No weekday differs significantly from Friday. Saturday remains the largest departure (−0.4737, OR ≈ 0.62, p = 0.162), followed by tuesday (0.2713, OR ≈ 1.31, p = 0.381); Monday, Wednesday and Thursday are all within 0.06 of zero. day of week contributes essentially nothing once incentive is in the model.
+
+Shows that including day is not that important.
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+library(sandwich)
+library(lmtest)
+
+# Joint test of the incentive effect, clustering on rider
+waldtest(glm_fixed,
+         update(glm_fixed, . ~ . - incentive),
+         vcov = vcovCL(glm_fixed, cluster = ~ unique_id),
+         test = "Chisq")
+```
+
+Reject H0.
+
+#### (2) Weighted Models - IPW for non-response on finished
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+# ipw for the well-being ~ microtransit use association
+
+library(dplyr)
+library(ordinal)      # clmm
+
+survey_weeks <- c("Apr 6-11", "Apr 20-25", "May 4-9", "May 18-23")
+
+# returns the day of the week
+weekday_of <- function(d) {
+  factor(c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")[
+    as.integer(format(d, "%u"))],
+    levels = c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"))
+}
+
+#eg: dd=as.Date("2026-08-10"); weekday_of(dd)
+
+# ---------------------------------------------------------------
+# 1st step: create "riders" dataframe, which includes all the riders who could have seen the
+#           pop-up to take the survey. So this dataset includes the individuals who decided to #           not click on the survey as well. 
+#----------------------------------------------------------------
+
+riders <- ride_full |>
+  filter(first_ride_of_day,
+         Request_Status == "Completed",
+    #Booking_Method == "Mobile Application", - no need because used the app to take the survey
+         study_week %in% survey_weeks) |>
+  transmute(unique_id   = Rider_ID,       
+            survey_date = creation_date,  
+            week_group  = factor(study_week, levels = survey_weeks), 
+            day         = weekday_of(creation_date),
+            hour        = as.numeric(creation_time) %/% 3600) 
+
+# U = vector of microtransit utilization (rides in past week)
+# ride_data already has weekly_ride_count, but only for survey takers.
+# The click model needs it for riders who never clicked, so it is rebuilt here from "riders" dataframe using the same rule: (0 < gap <= 7)
+
+lookback <- riders |> 
+  dplyr::select(unique_id, survey_date) |> 
+  inner_join(ride_full |> 
+             transmute(unique_id = Rider_ID, ride_date = creation_date), 
+             by = "unique_id", relationship = "many-to-many") |> 
+  mutate(gap = as.integer(survey_date - ride_date)) |> 
+  filter(gap > 0, gap <= 7) |> 
+  count(unique_id, survey_date, name = "weekly_ride_count")
+# colnames of lookback: unique_id, survey_date, weekly_ride_count
+# nrow(lookback) = 8815
+
+riders <- riders |>
+  left_join(lookback, by = c("unique_id", "survey_date")) |>
+  mutate(weekly_ride_count = coalesce(weekly_ride_count, 0L))
+
+# ---------------------------------------------------------------
+# 2nd step: Attach C, F, I and the outcome from ride_data.
+# C: click = 1, binary indicator of clicking on the pop-up to see more about the survey
+# F: binary indicator of finishing the survey
+# I: three-level categorical incentive
+# Saturday is already reversed.
+# ---------------------------------------------------------------
+survey_status <- ride_data |>
+  transmute(unique_id, survey_date,
+        click     = 1L,
+        complete  = as.integer(!is.na(well_being_score)), #indicator: complete wellbeing (0/1)
+        incentive = factor(incentive, levels = c(0, 1, 2)),
+        wb        = well_being_score)
+
+#match the survey to the nearest date, such that it is within the relevant week_group
+#OR
+#remove these 183 surveys?
+
+riders <- riders |>
+  left_join(survey_status, by = c("unique_id", "survey_date")) |> 
+#since its a left join all rows of dataframe riders are retained, additionally columns;
+#"click","complete","incentive" and "wb" from survey-status dataset are included. 
+  mutate(click    = coalesce(click, 0L), #non-clickers are set to zero
+         complete = if_else(click == 0L, 0L, coalesce(complete, 0L))) 
+         #for click=0, corresponding complete is set to zero
+
+table(riders$click, riders$complete)  #column = click(0/1)
+
+```
+
+Removed 183 surveys, since these individuals took the survey but didn't book a ride right after?
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+#   These are rider-days who started a survey but did no completed app-booking for a ride.
+n_unmatched <- nrow(ride_data) - sum(riders$click)
+cat("started a survey but didn't book a ride afterwards:", n_unmatched,
+    "of", nrow(ride_data), "\n")
+```
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+# step 4- Model 1: click model, fit on ALL riders in the 4 week survey period who had the opportunity to click on the survey.
+#   P(C = 1 | R, U).  R: vector of rider characteristics (day), U: vector of microtransit utilization (weekly_ride_count)
+# Incentive is deliberately EXCLUDED: since riders cannot see it before clicking, 
+# so P(C = 1 | I) = P(C = 1).
+# ---------------------------------------------------------------
+
+fit_click <- glm(click ~ day + week_group + weekly_ride_count + hour,
+                 family = binomial, data = riders)
+summary(fit_click)
+
+riders$prob_click <- predict(fit_click, type = "response")
+```
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+# ---------------------------------------------------------------
+# step 5 -  model 2: completion model, fit on CLICKERS ONLY
+# F: binary indicator of completing the well-being question (not the survey) 
+#   P(F = 1 | C = 1, I, R, U).  Covariates must be observed for
+#   completers AND non-completers, so cannot be consequence
+#   of completing -- so no progress, no duration, no trip_purpose.
+# ---------------------------------------------------------------
+clickers <- filter(riders, click == 1L)
+
+m_main <- glm(complete ~ incentive + day + week_group + weekly_ride_count,
+              family = binomial, data = clickers)
+#m_int1 <- update(m_main, . ~ . + incentive:weekly_ride_count)
+#m_int2 <- update(m_main, . ~ . + incentive:day)
+#BIC(m_main, m_int1, m_int2)            # keep the lowest
+fit_complete <- m_main                
+summary(fit_complete)
+
+#include the probability in riders dataframe
+riders$prob_complete <- NA_real_
+riders$prob_complete[riders$click == 1L] <-
+  predict(fit_complete, newdata = clickers, type = "response")
+```
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+# step 5:  joint probability & ipw weight.
+#   P(F = 1, C = 1 | ) = P(F = 1 | C = 1, ) x P(C = 1 | )
+#   A completer who was unlikely to reach this point receives a
+#   large weight, standing in for similar riders who never did.
+
+riders <- riders |>
+  mutate(prob_click_and_complete = prob_click * prob_complete,
+         ipw = 1 / prob_click_and_complete)
+
+summary(riders$ipw[riders$complete == 1L])   # check for extreme weights
+```
+
+Weighting: each person you observe has to stand in for everyone like them that you didn't observe.
+
+$$N \cdot \frac{1}{10} = n , \text{where } p = \frac{1}{10} \\
+\text{30 individuals out of the sample were observed to have cars} \\
+\text{ How many individuals in the population have cars ?} \\
+\frac{30}{n} \cdot N = 30 \cdot (\frac{N}{n}) = 30 \cdot 10 = 300 \\
+\text{Each samples person represents } \frac{1}{(1/p)} = 10 \text{ towns people.}$$
+
+Why did we use the product of two probabilities?
+
+A rider lands in the analysis only if they clear two hurdles:
+
+- click on the POP-up
+
+- complete the well-being question
+
+$$P(C=1, F=1|cov) = 0.108 \approx \frac{1}{9} \\
+\text{This implies that 1 in 9 riders make it to this sample.} \\
+p = \frac{1}{9}, \textit{ipw} = \frac{1}{p} = 9
+\text{Eacg sampled person represents 9 riders in Wilson} $$
+
+So now n={clicking and completing the well-being question}
+
+```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
+
+# ---------------------------------------------------------------
+# Step 6:  MODEL 3 -- IPW-adjusted well-being model.
+#   Fit on riders who clicked AND completed.
+#   `day` MUST stay in the model: a DIFFERENT construct was asked
+#   each weekday (overall health, vigor, ...), so dropping it would
+#   silently pool six different scales into one outcome.
+# ---------------------------------------------------------------
+analysis <- riders |>
+  filter(complete == 1L, !is.na(wb)) |>
+  mutate(wb_ord = factor(wb, levels = 1:7, ordered = TRUE))
+
+fit_wb_ipw <- MASS::polr(wb_ord ~ weekly_ride_count + day,
+                         data = analysis, weights = analysis$ipw, Hess = TRUE)
+
+# Complete-case fit: the simulation's benchmark comparison
+fit_wb_cc  <- MASS::polr(wb_ord ~ weekly_ride_count + day,
+                         data = analysis, Hess = TRUE)
+
+cbind(complete_case = coef(fit_wb_cc), ipw = coef(fit_wb_ipw))
+
+# ---------------------------------------------------------------
+# Step 7:  Repeated-measures version.
+#   The simulation has one row per rider; ride_data has 1,441
+#   surveys from 736 riders (up to 16 each), so a rider random
+#   intercept is needed.  polr cannot fit one; clmm can.
+# ---------------------------------------------------------------
+fit_wb_clmm <- clmm(wb_ord ~ weekly_ride_count + day + (1 | unique_id),
+                    data = analysis, weights = ipw, link = "logit")
+summary(fit_wb_clmm)
+```
