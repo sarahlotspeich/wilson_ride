@@ -31,7 +31,7 @@ library(sandwich)
 library(lmtest)
 ```
 
-## ride_full (the complete data set)
+## Ride_full (the complete data set)
 
 ```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
 
