@@ -31,7 +31,7 @@ library(sandwich)
 library(lmtest)
 ```
 
-## Ride_full (the complete data set)
+## ride_full (the complete data set)
 
 ```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
 
@@ -779,7 +779,7 @@ $$
 
 so no finite maximum exists over the explored range, for the above expression. The reported $\hat\sigma_u = 11.727$ (variance $137.52$) is because it stops at a numerical tolerance rather than an estimate of genuine between-rider heterogeneity.
 
-An implied intra-class correlation of 0.977 asserts that almost all variation in completion is between riders and almost none within; and the fitted individual probabilities are pinned at the boundaries 1 or 0.
+An implied intra-class correlation of 0.977 asserts that almost all variation in completion is within riders and almost none between; and the fitted individual probabilities are pinned at the boundaries 1 or 0.
 
 $$\hat{ICC} = \frac{\hat{\sigma}_u^2}{\hat{\sigma}_u^2 + \frac{\pi^2}{3}} = \frac{137.52}{137.52 + 3.29} \approx 0.977$$
 
@@ -836,6 +836,36 @@ ggplot(completion_by_frequency, aes(times, percent, fill = status)) +
         legend.position = "top")
 ```
 
+```{r, echo=FALSE, comment=NA, message=FALSE, warning=FALSE}
+
+plot_df <- ride_data %>%
+  filter(!is.na(incentive), !is.na(finished)) %>%
+  mutate(
+    incentive = factor(incentive, levels = c(0, 1, 2),
+                       labels = c("No Rides", "1 Free Ride", "2 Free Rides")),
+    finished  = factor(finished, levels = c(FALSE, TRUE),
+                       labels = c("Not finished", "Finished"))
+  )
+
+# counts + percentage within each incentive group
+summary_df <- plot_df %>%
+  count(incentive, finished, name = "n") %>%
+  group_by(incentive) %>%                       # denominator = total per incentive
+  mutate(pct = n / sum(n) * 100) %>%
+  ungroup()
+
+ggplot(summary_df, aes(x = finished, y = pct, fill = finished)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3) +
+  facet_wrap(~ incentive, nrow = 1) +
+  scale_y_continuous(limits = c(0, 100),
+                     breaks = seq(0, 100, by = 20),
+                     labels = function(x) paste0(x, "%"),
+                     expand = expansion(mult = c(0, 0.12))) +  # headroom for labels
+  labs(x = NULL, y = "Percentage of surveys") +
+  theme_bw()
+```
+
 ### 1.2 Logistic Model that works
 
 Resolved to fit the logistic model without a random intercept.
@@ -852,7 +882,11 @@ glm_base1 <- glm(finished ~ incentive  + week_group , family = binomial, data = 
 
 glm_base2 <- glm(finished ~ incentive + hour + day + week_group , family = binomial, data = model_df)
 
-glm_ride_vol1 <- glm(finished ~ incentive + weekly_ride_count + week_group, family = binomial, data = model_df)
+glm_ride_vol1 <- glm(finished ~   weekly_ride_count + incentive + week_group, family = binomial, data = model_df) 
+
+
+# finished ~   weekly_ride_count * incentive + week_group
+#because 2 rides were only offered in the last two weeks; finished ~   weekly_ride_count + incentive*week_group
 
 glm_ride_vol2 <- glm(finished ~ incentive + weekly_ride_count + hour + day + week_group, family = binomial, data = model_df)
 
@@ -867,13 +901,15 @@ Decided on the model $\textit{glm\_ride\_vol1}$ since it has lowest AIC and BIC 
 
 $$\textit{finished} \sim \textit{incentive + weekly\_ride\_count + week\_group} $$
 
-$$\log\!\left(\frac{\pi_{ij}}{1 - \pi_{ij}}\right) = (\beta_0 + u_j) + \beta_1\,\text{OneFreeRide}_{ij} + \beta_2\,\text{TwoFreeRides}_{ij} + \beta_3\,\text{WeeklyRideCount}_{ij} + \\ 
+$$Y_{ij} \sim \operatorname{Bernoulli}\left(\pi_{ij}\right), \qquad Y_{ij} = 1 \text{ if survey } i \text{ is completed by individual } j.$$
+
+$$\log\!\left(\frac{\pi_{ij}}{1 - \pi_{ij}}\right) = (\beta_0 ) + \beta_1\,\text{OneFreeRide}_{ij} + \beta_2\,\text{TwoFreeRides}_{ij} + \beta_3\,\text{WeeklyRideCount}_{ij} + \\ 
 \beta_4\,\text{Apr20-25}  + \beta_5\,\text{May4-9} + \beta_6\,\text{May18-23}$$
 
 $hour$ and $day$ variables were not significant, and were not included in this logistic model.
 
 ```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
-summary(glm_ride_vol1)
+summary(glm_ride_vol1) #CENTER AT mean/median rides
 ```
 
 The drop from null to residual is the deviance explained by the predictors:
@@ -971,22 +1007,22 @@ The only difference between these two approaches is how the residuals are aggreg
 
 The essential point is in that inner sum. Residuals are added up within each rider before being squared, so if a rider's residuals move together the meat inflates and the standard errors widen. If residuals within a rider are unrelated, the meat is close to the independence version and nothing much changes.
 
-On evalauating the coefficients and This cluster-robust fit is empirical evidence that the within-rider correlation in completion is negligible.
+On evaluating the coefficients and This cluster-robust fit is empirical evidence that the within-rider correlation in completion is negligible.
 
 ```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
 
 coeftest(glm_ride_vol1, vcov = vcovCL, cluster = ~ unique_id)
 ```
 
-**Intercept (1.5651):** A rider offered No Rides in the reference week (Apr 6-11) with no rides in the preceding week has predicted log-odds of completing the survey of 1.57. Probability of completion: e\^1.57 / (1 + e\^1.57) ≈ 0.83.
+**Intercept (1.5651):** A rider offered No Rides in the reference week (Apr 6-11) with no rides in the preceding week has predicted log-odds of completing the survey of 1.57. Probability of completion: $\frac{e^{1.57}}{1 + e^{1.57}} ≈ 0.83$.
 
-**1 Free Ride (0.5070):** Holding week group and weekly ride count fixed, being offered 1 free ride rather than none raises the log-odds of completion by 0.51. On the odds scale, e\^0.51 ≈ 1.66, so the odds of completing are roughly 1.7 times higher than under No Rides (p = 0.0130). On the probability scale this moves the reference rider from 0.83 ( $\frac{ e^{(1.5651)} }{{1+e^{(1.5651)}} }$ ) to about 0.89 ( $\frac{e^{(1.5651+0.5070)}}{1+e^{(1.5651+0.5070)}}$ ).
+**1 Free Ride (0.5070):** Holding week group and weekly ride count fixed, being offered 1 free ride rather than none raises the log-odds of completion by 0.51. On the odds scale, $e^{0.51} ≈ 1.66$, so the odds of completing are roughly 1.7 times higher than under No Rides (p = 0.0130). On the probability scale this moves the reference rider from 0.83 ( $\frac{ e^{(1.5651)} }{{1+e^{(1.5651)}} }$ ) to about 0.89 ( $\frac{e^{(1.5651+0.5070)}}{1+e^{(1.5651+0.5070)}}$ ).
 
-**2 Free Rides (1.2935):** Relative to No Rides, the log-odds rise by 1.29. On the odds scale, e\^1.29 ≈ 3.65, so the odds of completing are roughly 3.6 times higher than under No Rides (p = 0.0035). In probability terms, from 0.83 to about 0.94 ( $plogis(1.5651+1.2935)$ ).
+**2 Free Rides (1.2935):** Relative to No Rides, the log-odds rise by 1.29. On the odds scale, $e^{1.29} ≈ 3.65$, so the odds of completing are roughly 3.6 times higher than under No Rides (p = 0.0035). In probability terms, from 0.83 to about 0.94 ( $\frac{e^{(1.5651+1.2935)}}{1 + e^{(1.5651+1.2935)}} ≈ 0.83$ ).
 
 The monotone ordering holds (0 \< 0.51 \< 1.29), and both contrasts remain significant after accounting for repeated responses by the same rider (which is the result we wanted), since it means the incentive effect is not an artifact of a handful of frequent respondents. The step from one free ride to two is larger than the step from none to one: the odds ratio for two rides is about 2.2 times that for one, so the return to the second ride is greater than the first rather than diminishing.
 
-**Weekly ride count (0.0648):** Each additional ride taken in the seven days before the survey raises the log-odds of completion by 0.065, an odds ratio of e\^0.065 ≈ 1.07 per ride (p = 0.0246). The per-ride effect is small but accumulates: five additional rides multiply the odds by about 1.38 and ten by about 1.91. For the reference rider this corresponds to a rise in completion probability from 0.83 at zero recent rides to about 0.87 at five rides and 0.90 at ten. Riders who use the service more frequently are therefore more likely to finish the survey, which is consistent with greater engagement with the app.
+**Weekly ride count (0.0648):** Each additional ride taken in the seven days before the survey raises the log-odds of completion by 0.065, an odds ratio of $e^{0.065} ≈ 1.07$ per ride (p = 0.0246). The per-ride effect is small but accumulates: five additional rides multiply the odds by about 1.38 and ten by about 1.91. For the reference rider this corresponds to a rise in completion probability from 0.83 at zero recent rides to about 0.87 at five rides and 0.90 at ten. Riders who use the service more frequently are therefore more likely to finish the survey, which is consistent with greater engagement with the app.
 
 **Week group (reference = Apr 6-11):** May 18-23 is the only week that differs significantly from the reference (1.1183, OR ≈ 3.06, p = 0.0075), indicating higher completion late in the study. Apr 20-25 is indistinguishable from the reference (0.0105, OR ≈ 1.01, p = 0.966), and May 4-9 is slightly lower but not significant (−0.2128, OR ≈ 0.81, p = 0.456). Completion is therefore broadly stable across the first three survey weeks, with a rise in the final week.
 
@@ -1066,14 +1102,22 @@ library(dplyr)
 library(tidyr)
 library(ggplot2)
 
-day_levels <- c("Monday", "Tuesday", "Wednesday",
-                "Thursday", "Friday", "Saturday",
-                "Missing well-being scores")
+day_levels <- c("Monday: overall health", "Tuesday: vigor", "Wednesday: physical health",
+                "Thursday: mental health", "Friday: sleep quality", "Saturday: loneliness")
 
-# seven graded shades (their five, plus two lighter at the low end) + grey for NA
-my_colors <- c("1" = "#fdd49e", "2" = "#fdbb84", "3" = "#f19c7c",
-               "4" = "#fc8d59", "5" = "#e34a33", "6" = "#b30000", 
-               "7" = "#7f0000", "Missing" = "grey55")
+# shared lookup so both branches produce identical sector labels
+day_labels <- c(Monday    = "Monday: overall health",
+                Tuesday   = "Tuesday: vigor",
+                Wednesday = "Wednesday: physical health",
+                Thursday  = "Thursday: mental health",
+                Friday    = "Friday: sleep quality",
+                Saturday  = "Saturday: loneliness")
+
+# seven graded shades + grey for missing (Missing listed first)
+my_colors <- c("Missing" = "grey55",
+               "1" = "#fdd49e", "2" = "#fdbb84", "3" = "#f19c7c",
+               "4" = "#fc8d59", "5" = "#e34a33", "6" = "#b30000",
+               "7" = "#7f0000")
 
 # 1. answered surveys: one row per (week, weekday, Likert score)
 answered <- ride_data |>
@@ -1082,24 +1126,27 @@ answered <- ride_data |>
   select(week_group, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday) |>
   pivot_longer(-week_group, names_to = "day_cat", values_to = "score") |>
   filter(!is.na(score)) |>
+  mutate(day_cat = unname(day_labels[day_cat])) |>
   count(week_group, day_cat, score, name = "count")
 
-# 2. surveys with no well-being score
+# 2. surveys with no well-being score, attributed to their own weekday
 missing <- ride_data |>
-  filter(is.na(well_being_score)) |>
-  count(week_group, name = "count") |>
-  mutate(day_cat = "Missing well-being scores", score = NA_integer_)
+  filter(is.na(well_being_score), !is.na(day)) |>
+  count(week_group, day, name = "count") |>
+  mutate(day_cat = unname(day_labels[as.character(day)]),
+         score   = NA_integer_) |>
+  select(week_group, day_cat, score, count)
 
 # 3. combine; ensure every week x day sector exists
 radial_df <- bind_rows(answered, missing) |>
   mutate(
     day_cat = factor(day_cat, levels = day_levels),
     score_f = factor(if_else(is.na(score), "Missing", as.character(score)),
-                     levels = c(as.character(1:7), "Missing"))
+                     levels = c("Missing", as.character(1:7)))   # Missing before 1
   ) |>
   complete(week_group, day_cat, fill = list(count = 0L))
 
-# 4. radial gridline labels — max is now the tallest single bar, not a stack total
+# 4. radial gridline labels — max is the tallest single bar
 max_r    <- max(radial_df$count, na.rm = TRUE)
 r_breaks <- pretty(c(0, max_r), n = 8)
 r_breaks <- r_breaks[r_breaks > 0 & r_breaks <= max_r]
@@ -1114,30 +1161,34 @@ ggplot(radial_df, aes(x = day_cat, y = count, fill = score_f)) +
             aes(x = x, y = count, label = label),
             inherit.aes = FALSE, size = 2.6, colour = "grey30",
             hjust = 0.5, vjust = -0.3) +
-  coord_polar(start = 0) +
+  coord_polar(start = 0, clip = "off") +
   facet_wrap(~ week_group, nrow = 2) +
   scale_y_continuous(limits = c(-max_r * 0.18, max_r * 1.05),
                      breaks = r_breaks, expand = c(0, 0)) +
+  scale_x_discrete(labels = function(x) gsub(": ", ":\n", x)) +   # wrap onto two lines
   scale_fill_manual(values = my_colors, name = "Well-being score",
                     na.translate = FALSE) +
   labs(
     title    = "Breakdown of the well-being score by day and study week",
-    subtitle = "The radius provides the number of surveys belonging to each category; The category 'Missing well-being scores' counts surveys with no response in each study week.",
+    subtitle = "The radius provides the number of surveys belonging to each category; within each day, the grey bar counts surveys with no well-being response.",
     x = NULL, y = NULL
   ) +
-  theme_minimal(base_size = 11) +
+  theme_minimal(base_size = 12) +
   theme(
     axis.text.y      = element_blank(),
     axis.ticks.y     = element_blank(),
-    axis.text.x      = element_text(size = 7.5, colour = "grey20"),
+    axis.text.x      = element_text(size = 10, colour = "grey20", lineheight = 0.9),
     panel.grid.major.x = element_line(colour = "grey88", linewidth = 0.3),
     panel.grid.major.y = element_line(colour = "grey88", linewidth = 0.3),
     panel.grid.minor = element_blank(),
-    strip.text       = element_text(face = "bold"),
+    panel.spacing    = unit(2.5, "lines"),          # room between the four panels
+    plot.margin      = margin(10, 40, 10, 40),      # room at the left/right edges
+    strip.text       = element_text(face = "bold", size = 12),
     legend.position  = "bottom",
-    legend.key.size  = unit(0.4, "cm")
+    legend.key.size  = unit(0.5, "cm"),
+    legend.text      = element_text(size = 10),
+    legend.title     = element_text(size = 11)
   )
-
 ```
 
 ```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
@@ -1315,6 +1366,95 @@ riders <- riders |>
 summary(riders$ipw[riders$complete == 1L])   # check for extreme weights
 ```
 
+### 2.1 Theory of the inverse probability weight
+
+**Notation.** Let $i = 1, \dots, N$ index the the rider-days on which a pop-up could have been seen ($N = 10{,}085$, contributed by 2,060 riders). For each opportunity define
+
+- $R_i$: rider characteristics (day of week, hour of day),
+- $U_i$: microtransit utilization (rides in the past seven days),
+- $I_i$: the three-level incentive,
+- $C_i \in \{0,1\}$: indicator of clicking on the pop-up,
+- $F_i \in \{0,1\}$: indicator of completing the well-being question,
+- $Y_i$: the well-being score.
+
+Write $\mathbf{X}_i = (R_i, U_i)$ for the covariates observed at every opportunity, whether or not the rider clicked. Rider demographics $D$ are not recorded in either data set and so cannot enter the models.
+
+**The selection mechanism.** The outcome $Y_i$ is observed only when a rider clears two hurdles in sequence: they must click the pop-up, and having clicked, they must answer the well-being question. Define the observation indicator
+
+$$S_i = C_i \cdot F_i, \qquad Y_i \text{ observed} \iff S_i = 1.$$
+
+The probability of being observed is therefore
+
+$$\pi_i = P(S_i = 1 \mid \mathbf{X}_i, I_i) = P(C_i = 1, F_i = 1 \mid \mathbf{X}_i, I_i).$$
+
+**Why the product of two probabilities:** The joint probability is not modelled directly. Applying the probability chain rule splits it into two pieces that can each be estimated from the data:
+
+$$P(C = 1, F = 1 \mid \mathbf{X}, I)
+= \underbrace{P(F = 1 \mid C = 1, \mathbf{X}, I)}_{\text{completion model}}
+\times
+\underbrace{P(C = 1 \mid \mathbf{X}, I)}_{\text{click model}}.$$
+
+The second factor simplifies. Riders cannot see the incentive until after they click into the survey, so the incentive carries no information about the decision to click:
+
+$$P(C = 1 \mid \mathbf{X}, I) = P(C = 1 \mid \mathbf{X}).$$
+
+This identity is what makes the click layer estimable at all, the incentive is unobserved for riders who never clicked, and without the identity the first factor could not be fitted. Writing $\pi_i^{C}$ and $\pi_i^{F}$ for the two factors,
+
+$$\pi_i = \pi_i^{C} \cdot \pi_i^{F},
+\qquad
+\pi_i^{C} = P(C_i = 1 \mid \mathbf{X}_i),
+\qquad
+\pi_i^{F} = P(F_i = 1 \mid C_i = 1, \mathbf{X}_i, I_i).$$
+
+The two fitted models: Model 1 is fitted on all $N$ opportunities, and excludes the incentive by the identity above:
+
+$$\operatorname{logit} \pi_i^{C}
+= \alpha_0 + \alpha_1 U_i + \alpha_2 \text{hour}_i
++ \boldsymbol{\alpha}_3^\top \text{day}_i
++ \boldsymbol{\alpha}_4^\top \text{week}_i .$$
+
+Model 2 is fitted on the clickers only, since $F$ is defined only once $C = 1$:
+
+$$\operatorname{logit} \pi_i^{F}
+= \gamma_0 + \boldsymbol{\gamma}_1^\top I_i + \gamma_2 U_i
++ \gamma_3 \text{hour}_i
++ \boldsymbol{\gamma}_4^\top \text{day}_i
++ \boldsymbol{\gamma}_5^\top \text{week}_i .$$
+
+Every covariate in Model 2 must be observed for completers *and* non-completers, and must not be a consequence of completing. This is why $\textit{progress}$, $\textit{duration}$ and $\textit{trip\_purpose}$ are excluded: they are recorded only as a by-product of moving through the survey.
+
+**The weight.** The inverse probability weight is the reciprocal of the estimated joint probability,
+
+$$w_i = \frac{1}{\hat\pi_i}
+= \frac{1}{\hat\pi_i^{C} \cdot \hat\pi_i^{F}} .$$
+
+**Why inverting the probability corrects the bias:** The weight is the number of riders in the population that one observed rider stands in for. Following the Horvitz–Thompson argument, for any function $g(\cdot)$ of the outcome,
+
+$$E\!\left[ \sum_{i=1}^{N} \frac{S_i}{\pi_i}\, g(Y_i) \right]
+= \sum_{i=1}^{N} \frac{E[S_i \mid \mathbf{X}_i, I_i]}{\pi_i}\, g(Y_i)
+= \sum_{i=1}^{N} \frac{\pi_i}{\pi_i}\, g(Y_i)
+= \sum_{i=1}^{N} g(Y_i),$$
+
+since $E[S_i \mid \mathbf{X}_i, I_i] = \pi_i$. The weighted sum over the observed riders is therefore an unbiased estimate of the sum over all riders, which is precisely the quantity of interest. Estimation proceeds by maximising the weighted log-likelihood over the observed cases,
+
+$$\ell_w(\boldsymbol{\theta})
+= \sum_{i \,:\, S_i = 1} \frac{1}{\hat\pi_i} \, \log L_i(\boldsymbol{\theta}),$$
+
+which is what the `weights` argument supplies to the ordinal model in Step 6.
+
+**Interpretation of the magnitude.** In this study $1{,}258$ of the $10{,}085$ opportunities produced a click, so $\hat P(C = 1) \approx 0.125$, and $1{,}149$ of those $1{,}258$ clickers answered the well-being question, so $\hat P(F = 1 \mid C = 1) \approx 0.913$. The joint probability is therefore
+
+$$\hat\pi \approx 0.125 \times 0.913 \approx 0.114 \approx \frac{1}{9},
+\qquad w = \frac{1}{\hat\pi} \approx 9 .$$
+
+Roughly one rider in nine clears both hurdles, so each rider in the analysis represents about nine riders in Wilson. The weights are not constant: a rider whose covariate pattern makes clicking and completing unlikely receives a *larger* weight, because comparatively few riders like them survived both hurdles, and those few must therefore carry more of the load. Saturday illustrates this. Saturday riders click at roughly half the odds of Monday riders and complete slightly less often, so they are under-represented among the observed cases relative to their share of all opportunities; up-weighting them restores the composition of the full rider population.
+
+**Assumptions.** Two conditions are required. First, positivity: every opportunity must have $\pi_i > 0$, so that no group of riders is structurally excluded from the sample. Second, and more restrictively, selection must be missing at random given the observed covariates,
+
+$$S_i \perp\!\!\!\perp Y_i \mid \mathbf{X}_i, I_i .$$
+
+That is, among riders sharing the same day, hour, recent ride count, week and incentive, whether a rider clicked and completed carries no further information about their well-being. If instead the decision to click or complete depends on current well-being itself, the mechanism is not missing at random and the weights cannot correct it, since they are constructed only from observed covariates. This limitation cannot be tested here, because the well-being score is missing precisely for those who did not complete. The absence of rider demographics $D$ further weakens the plausibility of the assumption, as age and gender are known predictors of survey non-response.
+
 Weighting: each person you observe has to stand in for everyone like them that you didn't observe.
 
 $$N \cdot \frac{1}{10} = n , \text{where } p = \frac{1}{10} \\
@@ -1333,19 +1473,17 @@ A rider lands in the analysis only if they clear two hurdles:
 
 $$P(C=1, F=1|cov) = 0.108 \approx \frac{1}{9} \\
 \text{This implies that 1 in 9 riders make it to this sample.} \\
-p = \frac{1}{9}, \textit{ipw} = \frac{1}{p} = 9
-\text{Eacg sampled person represents 9 riders in Wilson} $$
+p = \frac{1}{9}, \textit{ipw} = \frac{1}{p} = 9 \
+\text{Each sampled person represents 9 riders in Wilson} $$
 
 So now n={clicking and completing the well-being question}
 
 ```{r, message=FALSE, warning=FALSE, comment=NA, echo=FALSE}
 
 # ---------------------------------------------------------------
-# Step 6:  MODEL 3 -- IPW-adjusted well-being model.
-#   Fit on riders who clicked AND completed.
-#   `day` MUST stay in the model: a DIFFERENT construct was asked
-#   each weekday (overall health, vigor, ...), so dropping it would
-#   silently pool six different scales into one outcome.
+# model 3: ipw-adjusted well-being model.
+#   Fit on riders who clicked and completed.
+#   day must stay in the model: each weekday asked about a different aspect of well-being, so dropping it would treat six distinct measures as if they were one.
 # ---------------------------------------------------------------
 analysis <- riders |>
   filter(complete == 1L, !is.na(wb)) |>
@@ -1354,8 +1492,9 @@ analysis <- riders |>
 fit_wb_ipw <- MASS::polr(wb_ord ~ weekly_ride_count + day,
                          data = analysis, weights = analysis$ipw, Hess = TRUE)
 
-# Complete-case fit: the simulation's benchmark comparison
-fit_wb_cc  <- MASS::polr(wb_ord ~ weekly_ride_count*day,
+# Unweighted fit on the same completers, for comparison
+# the gap between the two columns shows how much the weighting moves the estimates.
+fit_wb_cc  <- MASS::polr(wb_ord ~ weekly_ride_count + day,
                          data = analysis, Hess = TRUE)
 
 cbind(complete_case = coef(fit_wb_cc), ipw = coef(fit_wb_ipw))
@@ -1366,7 +1505,14 @@ cbind(complete_case = coef(fit_wb_cc), ipw = coef(fit_wb_ipw))
 #   surveys from 736 riders (up to 16 each), so a rider random
 #   intercept is needed.  polr cannot fit one; clmm can.
 # ---------------------------------------------------------------
-fit_wb_clmm <- clm(wb_ord ~ weekly_ride_count*day, #+ (1 | unique_id)
+fit_wb_clmm <- clm(wb_ord ~ weekly_ride_count + day, #+ (1 | unique_id)
                     data = analysis, weights = ipw, link = "logit")
+summary(fit_wb_clmm)
+```
+
+```{r}
+fit_wb_clmm <- clm(wb_ord ~ weekly_ride_count, #+ (1 | unique_id)
+                   data = analysis, weights = ipw, link = "logit",
+                   subset = day == "Monday")
 summary(fit_wb_clmm)
 ```
