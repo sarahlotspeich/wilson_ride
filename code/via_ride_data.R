@@ -70,3 +70,6 @@ ride_full <- ride_full |>
 ride_full <- ride_full |>
   dplyr::select(creation_date, creation_time, Ride_Duration, Rider_ID, dplyr::everything())
 
+# Save cleaned ride_full data 
+ride_full |> 
+  write.csv("~/Documents/wilson_ride/data/via_ride_data.csv", row.names = FALSE)
